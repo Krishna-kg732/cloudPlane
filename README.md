@@ -1,6 +1,6 @@
 # cloudplane
 
-**A Vercel-style control plane for deploying AI/ML workloads inside user-owned cloud accounts.**
+**A control plane for deploying AI/ML workloads inside user-owned cloud accounts.**
 
 cloudplane standardizes deployment workflows across cloud providers while preserving full user ownership, isolation, and direct access to underlying cloud resources. It uses delegated trust (OIDC), Kubernetes, and Terraform to orchestrate infrastructure without ever storing static cloud credentials.
 
