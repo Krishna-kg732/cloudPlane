@@ -107,23 +107,9 @@ cloudplane/
 
 **Purpose**: Exchange OIDC tokens for short-lived cloud credentials.
 
+**Structure**:
 [→ See detailed architecture and scaffolding](docs/architecture.md#credential-broker)
 
-**Structure**:
-```
-credential-broker/
-├── cmd/server/main.go
-├── internal/
-│   ├── api/                     # gRPC server
-│   ├── oidc/                    # Token validation
-│   ├── aws/                     # STS AssumeRoleWithWebIdentity
-│   ├── gcp/                     # Workload Identity (future)
-│   ├── azure/                   # Managed Identity (future)
-│   └── authz/                   # Authorization checks
-├── config/
-├── Dockerfile
-└── README.md
-```
 
 **Responsibilities**:
 - Validate OIDC tokens from cloudplane's identity provider
@@ -146,26 +132,9 @@ credential-broker/
 
 **Purpose**: Execute Terraform and kubectl operations in user clouds.
 
+**Structure**:
 [→ See detailed architecture and scaffolding](docs/architecture.md#orchestrator)
 
-**Structure**:
-```
-orchestrator/
-├── cmd/worker/main.go
-├── internal/
-│   ├── api/                     # gRPC job submission
-│   ├── executor/                # Job execution engine
-│   ├── terraform/               # Terraform wrapper
-│   ├── kubernetes/              # kubectl, Helm ops
-│   ├── queue/                   # Job queue (SQS, RabbitMQ)
-│   └── state/                   # Terraform state mgmt
-├── templates/
-│   ├── eks-cluster/
-│   ├── inference-service/
-│   └── vector-db/
-├── Dockerfile
-└── README.md
-```
 
 **Responsibilities**:
 - Pull jobs from queue (submitted by API)
