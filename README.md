@@ -1,6 +1,6 @@
 # cloudplane
 
-A Vercel-style control plane for deploying AI/ML workloads inside user-owned cloud accounts using delegated trust (OIDC), Kubernetes, and Terraform.
+A control plane for deploying AI/ML workloads inside user-owned cloud accounts using delegated trust (OIDC), Kubernetes, and Terraform.
 
 ---
 
@@ -44,15 +44,15 @@ A Vercel-style control plane for deploying AI/ML workloads inside user-owned clo
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  cloudplane Control Plane                    │
-│  ┌───────────────┐  ┌──────────────┐  ┌────────────────┐   │
-│  │ Control Plane │─▶│ Credential   │─▶│ Orchestrator   │   │
-│  │ API           │  │ Broker       │  │                │   │
-│  │               │  │              │  │ - Terraform    │   │
-│  │ - Auth        │  │ - OIDC→Cloud │  │ - kubectl      │   │
-│  │ - Projects    │  │ - STS assume │  │ - K8s ops      │   │
-│  │ - Deployments │  │ - Cred issue │  │                │   │
-│  └───────────────┘  └──────────────┘  └────────────────┘   │
+│                  cloudplane Control Plane                   │
+│  ┌───────────────┐  ┌──────────────┐  ┌────────────────┐    │
+│  │ Control Plane │─▶│ Credential   │─▶│ Orchestrator   │    │
+│  │ API           │  │ Broker       │  │                │    │
+│  │               │  │              │  │ - Terraform    │    │
+│  │ - Auth        │  │ - OIDC→Cloud │  │ - kubectl      │    │
+│  │ - Projects    │  │ - STS assume │  │ - K8s ops      │    │
+│  │ - Deployments │  │ - Cred issue │  │                │    │
+│  └───────────────┘  └──────────────┘  └────────────────┘    │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │ Observability (read-only metrics, logs, costs)       │   │
 │  └──────────────────────────────────────────────────────┘   │
@@ -60,7 +60,7 @@ A Vercel-style control plane for deploying AI/ML workloads inside user-owned clo
                          │ OIDC→STS AssumeRole
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              User-Owned Cloud Account (AWS)                  │
+│              User-Owned Cloud Account (AWS)                 │
 │  ┌────────────────────────────────────────────────────┐     │
 │  │ EKS Cluster (Inference, Training, Vector DBs)      │     │
 │  └────────────────────────────────────────────────────┘     │
@@ -107,6 +107,8 @@ cloudplane/
 
 **Purpose**: Exchange OIDC tokens for short-lived cloud credentials.
 
+[→ See detailed architecture and scaffolding](docs/architecture.md#credential-broker)
+
 **Structure**:
 ```
 credential-broker/
@@ -143,6 +145,8 @@ credential-broker/
 ### 2. Orchestrator
 
 **Purpose**: Execute Terraform and kubectl operations in user clouds.
+
+[→ See detailed architecture and scaffolding](docs/architecture.md#orchestrator)
 
 **Structure**:
 ```
@@ -184,18 +188,8 @@ orchestrator/
 **Purpose**: User-facing REST API for projects and deployments.
 
 **Structure**:
-```
-control-plane-api/
-├── cmd/api/main.go
-├── internal/
-│   ├── auth/                    # JWT, API keys
-│   ├── projects/                # Project CRUD
-│   ├── deployments/             # Deployment submission/status
-│   ├── connections/             # Cloud connection mgmt
-│   └── validation/              # Input validation, quotas
-├── Dockerfile
-└── README.md
-```
+[→ See detailed architecture and scaffolding](docs/architecture.md#control-plane-api)
+
 
 **Responsibilities**:
 - Authenticate users
@@ -213,41 +207,19 @@ control-plane-api/
 
 ---
 
-### 4. Observability (MVP-Light)
+### 4. Observability (MVP)
 
 **Purpose**: Aggregate metrics, logs, cost data from user accounts.
 
 **Structure**:
-```
-observability/
-├── cmd/collector/main.go
-├── internal/
-│   ├── metrics/                 # CloudWatch, Prometheus
-│   ├── logs/                    # CloudWatch Logs, GCP Logging
-│   ├── costs/                   # Cost Explorer, GCP Billing
-│   └── storage/                 # Time-series DB
-└── README.md
-```
+[→ See detailed architecture and scaffolding](docs/architecture.md#observability)
+ 
 
 **Responsibilities**: Periodic polling for metrics/logs/costs, expose via read-only API.
 
 **What it NEVER does**: Write to user accounts, alerting (out of scope), long-term log storage.
 
 **Why read-only**: Security (compromise can't modify infra), simplicity, minimal IAM permissions.
-
----
-
-## Shared Libraries (libs/)
-
-**Purpose**: Reusable utilities—**no business logic, no stateful operations**.
-
-**Acceptable**:
-- JWT validation, AWS SDK helpers, logging utils, config parsing, error types
-
-**Forbidden**:
-- Database models, HTTP handlers, business rules, stateful singletons, cross-service RPC clients
-
-**Rule of thumb**: If it needs a database/queue/external API, it's a service, not a library.
 
 ---
 
@@ -273,30 +245,6 @@ observability/
 - **Least Privilege**: Users define minimal IAM permissions. No `AdministratorAccess` required.
 - **Immediate Revocation**: Delete trust policy → access denied instantly.
 - **Auditability**: AWS CloudTrail logs all operations; cloudplane logs credential requests.
-
----
-
-## Development Philosophy
-
-**Monorepo now, microservices later**:
-- Early velocity (shared CI/CD, atomic changes)
-- Services architected for separation (gRPC, no cross-imports, independent Dockerfiles)
-- Future: Move to separate repos without refactoring
-
-**Service boundaries**:
-- ✅ Stay within service, use gRPC/queues for cross-service, version APIs
-- ❌ No shared state, no bypassing APIs, no direct service-to-service imports
-
----
-
-## Explicit Non-Goals
-
-- ❌ No data hosting (all data in user storage)
-- ❌ No managed vector database (can deploy, don't host)
-- ❌ No autonomous agents or LLM-driven infra
-- ❌ No black-box infra (users always have access)
-- ❌ No cloud account creation (BYOC only)
-- ❌ Not a general-purpose PaaS (AI/ML infra only)
 
 ---
 
