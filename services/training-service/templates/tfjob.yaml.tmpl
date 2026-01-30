@@ -1,0 +1,116 @@
+# TensorFlow TFJob Template
+
+apiVersion: kubeflow.org/v1
+kind: TFJob
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: training
+    framework: tensorflow
+    job-id: {{ .JobID }}
+spec:
+  tfReplicaSpecs:
+    Chief:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            job-id: {{ .JobID }}
+        spec:
+          containers:
+            - name: tensorflow
+              image: {{ .Image }}
+              {{- if .Command }}
+              command:
+                {{- range .Command }}
+                - "{{ . }}"
+                {{- end }}
+              {{- end }}
+              {{- if .Args }}
+              args:
+                {{- range .Args }}
+                - "{{ . }}"
+                {{- end }}
+              {{- end }}
+              ports:
+                - containerPort: 2222
+                  name: tfjob-port
+              resources:
+                limits:
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  memory: "64Gi"
+                requests:
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  memory: "32Gi"
+              env:
+                - name: TF_CONFIG
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.annotations['tf-config']
+              volumeMounts:
+                - name: fsx
+                  mountPath: /data
+                - name: checkpoints
+                  mountPath: /checkpoints
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: fsx
+              persistentVolumeClaim:
+                claimName: {{ .FSxPVCName }}
+            - name: checkpoints
+              emptyDir: {}
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 16Gi
+          tolerations:
+            - key: "nvidia.com/gpu"
+              operator: "Exists"
+              effect: "NoSchedule"
+    Worker:
+      replicas: {{ sub .Workers 1 }}
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            job-id: {{ .JobID }}
+        spec:
+          containers:
+            - name: tensorflow
+              image: {{ .Image }}
+              {{- if .Command }}
+              command:
+                {{- range .Command }}
+                - "{{ . }}"
+                {{- end }}
+              {{- end }}
+              ports:
+                - containerPort: 2222
+                  name: tfjob-port
+              resources:
+                limits:
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+              env:
+                - name: TF_CONFIG
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.annotations['tf-config']
+              volumeMounts:
+                - name: fsx
+                  mountPath: /data
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: fsx
+              persistentVolumeClaim:
+                claimName: {{ .FSxPVCName }}
+            - name: shm
+              emptyDir:
+                medium: Memory
+          tolerations:
+            - key: "nvidia.com/gpu"
+              operator: "Exists"
+              effect: "NoSchedule"

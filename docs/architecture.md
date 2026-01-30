@@ -1,185 +1,102 @@
 # Architecture
 
-This document describes the system architecture for cloudplane.
+cloudplane microservices architecture (MVP: AWS-only).
+
+---
 
 ## Overview
 
-cloudplane uses a microservices architecture with clear service boundaries, designed as a monorepo with future migration to separate repositories. Services communicate via gRPC and message queues, maintaining strict separation between the control plane (cloudplane-owned) and execution plane (user-owned).
+```
+User Request → Control Plane API → Job Queue → Orchestrator
+                                                    │
+                                        Credential Broker
+                                                    │
+                                         (OIDC → AWS STS)
+                                                    │
+                                                    ↓
+                                          User's AWS Account
+```
 
 ---
 
-## Credential Broker
+## Services
 
-**Architecture**: gRPC server handling OIDC token exchange for cloud credentials.
+### Credential Broker
 
-**Scaffolding**:
+Exchanges OIDC tokens for short-lived AWS credentials.
+
 ```
 services/credential-broker/
-├── cmd/server/main.go           # Entry point, gRPC server setup
+├── cmd/server/main.go
 ├── internal/
-│   ├── api/api.go              # gRPC service implementation
-│   ├── oidc/oidc.go            # OIDC token validation (go-oidc)
-│   ├── aws/aws.go              # STS AssumeRoleWithWebIdentity
-│   ├── gcp/gcp.go              # Workload Identity (future)
-│   ├── azure/azure.go          # Managed Identity (future)
-│   └── authz/authz.go          # Authorization checks
-├── config/config.yaml
-├── Dockerfile
-└── README.md
+│   ├── api/          # HTTP handlers
+│   ├── aws/          # STS client
+│   ├── oidc/         # Token validation
+│   └── authz/        # Authorization
 ```
 
-**Key Components**:
-- **OIDC Validator**: Verifies tokens from cloudplane's identity provider
-- **AWS STS Client**: Calls `AssumeRoleWithWebIdentity` with user's role ARN
-- **Authorization**: Checks project_id → role_arn mappings
-- **Audit Logger**: Records all credential vending operations
-
-**Security Model**:
-- Credentials vended on-demand, never persisted
-- Internal-only service (not exposed to internet)
-- Short-lived credentials (15-60 min TTL)
-- All requests logged for audit trail
+**MVP scope**: AWS STS only. GCP/Azure adapters in future.
 
 ---
 
-## Orchestrator
+### Control Plane API
 
-**Architecture**: Worker-based execution engine processing jobs from a queue.
+User-facing REST API for projects, connections, and jobs.
 
-**Scaffolding**:
-```
-services/orchestrator/
-├── cmd/worker/main.go           # Worker entry point
-├── internal/
-│   ├── api/api.go              # gRPC job submission server
-│   ├── executor/executor.go    # Job execution engine
-│   ├── terraform/terraform.go  # Terraform CLI wrapper
-│   ├── kubernetes/kubernetes.go # kubectl/Helm operations
-│   ├── queue/queue.go          # Job queue (SQS/RabbitMQ)
-│   └── state/state.go          # Terraform state management
-├── templates/
-│   ├── eks-cluster/            # EKS Terraform templates
-│   ├── inference-service/      # Inference deployment templates
-│   └── vector-db/              # Vector DB templates
-├── Dockerfile
-└── README.md
-```
-
-**Key Components**:
-- **Job Queue Consumer**: Pulls deployment jobs submitted by API
-- **Credential Client**: Requests temp credentials from credential broker
-- **Terraform Engine**: Generates HCL from templates, executes terraform commands
-- **Kubernetes Client**: Applies manifests, Helm charts via client-go
-- **State Manager**: Manages Terraform state in user's S3 backend
-
-**Workflow**:
-1. Poll queue for deployment jobs
-2. Request credentials from broker (gRPC)
-3. Generate Terraform/K8s configs from templates
-4. Execute operations with streaming logs
-5. Update job status in database
-
----
-
-## Control Plane API
-
-**Architecture**: RESTful HTTP API with JWT authentication.
-
-**Scaffolding**:
 ```
 services/control-plane-api/
-├── cmd/api/main.go              # HTTP server entry point
+├── cmd/api/main.go
 ├── internal/
-│   ├── auth/auth.go            # JWT validation, API keys
-│   ├── projects/projects.go    # Project CRUD operations
-│   ├── deployments/deployments.go # Deployment lifecycle
-│   ├── connections/connections.go # Cloud connection management
-│   └── validation/validation.go # Input validation, quotas
-├── Dockerfile
-└── README.md
+│   ├── projects/     # Project CRUD
+│   ├── connections/  # Cloud account linking
+│   └── training/     # Training job submission
 ```
 
-**Key Components**:
-- **Authentication Middleware**: JWT validation for all requests
-- **Project Service**: Manages project → cloud connection mappings
-- **Deployment Service**: Accepts deployment requests, submits to queue
-- **Connection Service**: Stores project_id → role_arn mappings
-- **Validation Layer**: Input sanitization, quota enforcement
-
-**API Endpoints**:
-- `POST /v1/projects` - Create project
-- `POST /v1/projects/:id/connections` - Link cloud account
-- `POST /v1/deployments` - Submit deployment
-- `GET /v1/deployments/:id` - Query status/logs
-- `GET /v1/projects/:id/resources` - List deployed resources
-
-**Security**:
-- Internet-facing, strict input validation
-- Never calls cloud APIs directly
-- Stores only role ARNs, never credentials
-- Rate limiting per user/project
+**MVP scope**: In-memory storage. Database in future.
 
 ---
 
-## Observability
+### Orchestrator
 
-**Architecture**: Polling-based metrics/logs collector with read-only access.
+Provisions infrastructure and runs Kubernetes workloads.
 
-**Scaffolding**:
 ```
-services/observability/
-├── cmd/collector/main.go        # Collector entry point
+services/orchestrator/
+├── cmd/worker/main.go
 ├── internal/
-│   ├── metrics/metrics.go      # CloudWatch/Prometheus collection
-│   ├── logs/logs.go            # Log aggregation
-│   ├── costs/costs.go          # Cost Explorer integration
-│   └── storage/storage.go      # Time-series DB storage
-└── README.md
+│   ├── queue/        # Job queue
+│   ├── executor/     # Job execution
+│   ├── terraform/    # Terraform CLI wrapper
+│   └── kubernetes/   # Kubeflow job creation
+├── templates/
+│   ├── eks-cluster/  # EKS + FSx + networking
+│   └── training-jobs/ # Kubeflow job templates
 ```
 
-**Key Components**:
-- **Metrics Collector**: Polls CloudWatch, Prometheus endpoints
-- **Log Aggregator**: Streams CloudWatch Logs from user accounts
-- **Cost Analyzer**: Queries Cost Explorer API for spend attribution
-- **Storage Backend**: Writes to time-series database (InfluxDB/Prometheus)
-
-**Access Pattern**:
-- Read-only IAM permissions
-- Periodic polling (5-15 min intervals)
-- Exposes data via read-only API to control plane
-- No alerting or modification capabilities
+**MVP scope**: In-memory queue. SQS/Pub-Sub in future.
 
 ---
 
-## Service Communication
+## Data Flow
 
 ```
-Control Plane API
-    ↓ (submit job)
-Job Queue (SQS/RabbitMQ)
-    ↓ (poll)
-Orchestrator
-    ↓ (request creds - gRPC)
-Credential Broker
-    ↓ (STS assume role)
-AWS/GCP/Azure
+1. User submits training job request
+2. API validates and queues job
+3. Orchestrator picks up job
+4. Orchestrator calls Credential Broker for AWS credentials
+5. Orchestrator runs Terraform (EKS, FSx, networking)
+6. Orchestrator creates Kubeflow training job
+7. Training runs in user's account
+8. User polls for status/logs
 ```
-
-**Communication Patterns**:
-- API → Queue: Async job submission
-- Orchestrator → Credential Broker: Synchronous gRPC
-- Orchestrator → User Cloud: Direct API calls with temp credentials
-- Observability → User Cloud: Read-only polling
 
 ---
 
-## Shared Libraries
+## MVP Limitations
 
-Located in `libs/`, used across services:
-
-- **auth**: JWT/OIDC validation utilities
-- **cloud**: AWS/GCP/Azure SDK wrappers
-- **config**: Configuration parsing (YAML)
-- **logging**: Structured logging (slog)
-
-**Design Principle**: Libraries contain only stateless utilities, no business logic or service-specific code.
+| Component | MVP | Future |
+|-----------|-----|--------|
+| Cloud | AWS only | + GCP, Azure |
+| Storage | In-memory | PostgreSQL |
+| Queue | In-memory | SQS |
+| Routing | Manual selection | Intelligent |

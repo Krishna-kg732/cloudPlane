@@ -1,0 +1,74 @@
+# HuggingFace Text Generation Inference (TGI) Template
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: inference
+    engine: tgi
+    deployment-id: {{ .DeploymentID }}
+spec:
+  replicas: {{ .Replicas }}
+  selector:
+    matchLabels:
+      deployment-id: {{ .DeploymentID }}
+  template:
+    metadata:
+      labels:
+        app: inference
+        deployment-id: {{ .DeploymentID }}
+    spec:
+      containers:
+        - name: tgi
+          image: ghcr.io/huggingface/text-generation-inference:latest
+          args:
+            - "--model-id"
+            - "{{ .Model }}"
+            - "--num-shard"
+            - "{{ .TensorParallel }}"
+            - "--port"
+            - "8000"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+          resources:
+            limits:
+              nvidia.com/gpu: {{ .GPUs }}
+          volumeMounts:
+            - name: model-cache
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache-pvc
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+spec:
+  selector:
+    deployment-id: {{ .DeploymentID }}
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

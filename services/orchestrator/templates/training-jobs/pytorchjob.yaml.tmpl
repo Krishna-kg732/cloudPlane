@@ -1,0 +1,131 @@
+# PyTorchJob Template
+# Uses Kubeflow Training Operator for distributed PyTorch training
+# Supports DDP, FSDP, DeepSpeed
+
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: cloudplane-training
+    job-id: {{ .JobID }}
+    framework: pytorch
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: cloudplane-training
+            role: master
+          {{- if .EFAEnabled }}
+          annotations:
+            vpc.amazonaws.com/efa: "true"
+          {{- end }}
+        spec:
+          tolerations:
+            - key: "nvidia.com/gpu"
+              operator: "Exists"
+              effect: "NoSchedule"
+          containers:
+            - name: pytorch
+              image: {{ .Image }}
+              {{- if .Command }}
+              command: {{ .Command | toJson }}
+              {{- end }}
+              {{- if .Args }}
+              args: {{ .Args | toJson }}
+              {{- end }}
+              env:
+                - name: NCCL_DEBUG
+                  value: "INFO"
+                {{- if .EFAEnabled }}
+                - name: FI_PROVIDER
+                  value: "efa"
+                - name: FI_EFA_USE_DEVICE_RDMA
+                  value: "1"
+                - name: NCCL_NET
+                  value: "ib"
+                {{- end }}
+              resources:
+                limits:
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  {{- if .EFAEnabled }}
+                  vpc.amazonaws.com/efa: 4
+                  {{- end }}
+              volumeMounts:
+                - name: training-data
+                  mountPath: /data
+                - name: checkpoints
+                  mountPath: /checkpoints
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: training-data
+              persistentVolumeClaim:
+                claimName: fsx-pvc
+            - name: checkpoints
+              persistentVolumeClaim:
+                claimName: fsx-pvc
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi
+    Worker:
+      replicas: {{ sub .Workers 1 }}
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: cloudplane-training
+            role: worker
+          {{- if .EFAEnabled }}
+          annotations:
+            vpc.amazonaws.com/efa: "true"
+          {{- end }}
+        spec:
+          tolerations:
+            - key: "nvidia.com/gpu"
+              operator: "Exists"
+              effect: "NoSchedule"
+          containers:
+            - name: pytorch
+              image: {{ .Image }}
+              env:
+                - name: NCCL_DEBUG
+                  value: "INFO"
+                {{- if .EFAEnabled }}
+                - name: FI_PROVIDER
+                  value: "efa"
+                - name: FI_EFA_USE_DEVICE_RDMA
+                  value: "1"
+                - name: NCCL_NET
+                  value: "ib"
+                {{- end }}
+              resources:
+                limits:
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  {{- if .EFAEnabled }}
+                  vpc.amazonaws.com/efa: 4
+                  {{- end }}
+              volumeMounts:
+                - name: training-data
+                  mountPath: /data
+                - name: checkpoints
+                  mountPath: /checkpoints
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: training-data
+              persistentVolumeClaim:
+                claimName: fsx-pvc
+            - name: checkpoints
+              persistentVolumeClaim:
+                claimName: fsx-pvc
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi

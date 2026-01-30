@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'cloudplane OIDC trust and IAM role for delegated access'
+
+Parameters:
+  CloudplaneOIDCProviderArn:
+    Type: String
+    Description: 'ARN of cloudplane OIDC provider (provided by cloudplane during onboarding)'
+    # No default - must be provided by cloudplane
+  
+  ProjectID:
+    Type: String
+    Description: 'Your cloudplane project ID'
+
+Resources:
+  # IAM Role that cloudplane will assume
+  CloudplaneRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudplane-${ProjectID}'
+      Description: 'Role for cloudplane to manage infrastructure'
+      MaxSessionDuration: 3600  # 1 hour max
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref CloudplaneOIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'auth.cloudplane.io:aud': 'credential-broker'
+                'auth.cloudplane.io:sub': !Sub 'project:${ProjectID}'
+      ManagedPolicyArns:
+        - !Ref CloudplanePolicy
+
+  # Policy with permissions for EKS, EC2, FSx, S3, IAM
+  CloudplanePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub 'cloudplane-${ProjectID}-policy'
+      Description: 'Permissions for cloudplane infrastructure management'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # EKS permissions
+          - Sid: EKSFullAccess
+            Effect: Allow
+            Action:
+              - eks:*
+            Resource: '*'
+
+          # EC2 permissions (for node groups, networking)
+          - Sid: EC2FullAccess
+            Effect: Allow
+            Action:
+              - ec2:*
+            Resource: '*'
+
+          # FSx permissions
+          - Sid: FSxFullAccess
+            Effect: Allow
+            Action:
+              - fsx:*
+            Resource: '*'
+
+          # S3 permissions (scoped to cloudplane buckets)
+          - Sid: S3Access
+            Effect: Allow
+            Action:
+              - s3:*
+            Resource:
+              - !Sub 'arn:aws:s3:::cloudplane-${AWS::AccountId}-*'
+              - !Sub 'arn:aws:s3:::cloudplane-${AWS::AccountId}-*/*'
+
+          # ECR permissions
+          - Sid: ECRAccess
+            Effect: Allow
+            Action:
+              - ecr:*
+            Resource: '*'
+
+          # CloudWatch Logs
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:*
+            Resource: '*'
+
+          # IAM permissions (for service accounts)
+          - Sid: IAMServiceAccounts
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRole
+              - iam:GetRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:PassRole
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:GetOpenIDConnectProvider
+              - iam:TagOpenIDConnectProvider
+            Resource:
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/cloudplane-*'
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/*'
+
+          # Auto Scaling (for node groups)
+          - Sid: AutoScaling
+            Effect: Allow
+            Action:
+              - autoscaling:*
+            Resource: '*'
+
+          # STS (for IRSA)
+          - Sid: STS
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/cloudplane-*'
+
+  # S3 bucket for Terraform state
+  StateBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cloudplane-${AWS::AccountId}-tfstate'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: ManagedBy
+          Value: cloudplane
+
+  # S3 bucket for training data
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cloudplane-${AWS::AccountId}-data'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: ManagedBy
+          Value: cloudplane
+
+Outputs:
+  RoleArn:
+    Description: 'IAM Role ARN to provide to cloudplane'
+    Value: !GetAtt CloudplaneRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+
+  StateBucketName:
+    Description: 'S3 bucket for Terraform state'
+    Value: !Ref StateBucket
+
+  DataBucketName:
+    Description: 'S3 bucket for training data'
+    Value: !Ref DataBucket
+
+  SetupInstructions:
+    Description: 'Next steps'
+    Value: !Sub |
+      1. Copy the RoleArn output above
+      2. In cloudplane, create a connection with:
+         - Role ARN: ${CloudplaneRole.Arn}
+         - Region: ${AWS::Region}
+      3. Upload training data to: s3://${DataBucket}/

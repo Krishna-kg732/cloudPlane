@@ -1,0 +1,69 @@
+# XGBoostJob Template
+# Distributed XGBoost training
+
+apiVersion: kubeflow.org/v1
+kind: XGBoostJob
+metadata:
+  name: {{ .Name }}
+  namespace: {{ .Namespace }}
+  labels:
+    app: cloudplane-training
+    job-id: {{ .JobID }}
+    framework: xgboost
+spec:
+  xgbReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template:
+        spec:
+          containers:
+            - name: xgboost
+              image: {{ .Image }}
+              {{- if .Command }}
+              command: {{ .Command | toJson }}
+              {{- end }}
+              {{- if .Args }}
+              args: {{ .Args | toJson }}
+              {{- end }}
+              env:
+                - name: DMLC_TRACKER_URI
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+              resources:
+                limits:
+                  {{- if gt .GPUsPerWorker 0 }}
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  {{- end }}
+                  cpu: "4"
+                  memory: "16Gi"
+              volumeMounts:
+                - name: training-data
+                  mountPath: /data
+          volumes:
+            - name: training-data
+              persistentVolumeClaim:
+                claimName: fsx-pvc
+    Worker:
+      replicas: {{ sub .Workers 1 }}
+      restartPolicy: OnFailure
+      template:
+        spec:
+          containers:
+            - name: xgboost
+              image: {{ .Image }}
+              resources:
+                limits:
+                  {{- if gt .GPUsPerWorker 0 }}
+                  nvidia.com/gpu: {{ .GPUsPerWorker }}
+                  {{- end }}
+                  cpu: "4"
+                  memory: "16Gi"
+              volumeMounts:
+                - name: training-data
+                  mountPath: /data
+          volumes:
+            - name: training-data
+              persistentVolumeClaim:
+                claimName: fsx-pvc
