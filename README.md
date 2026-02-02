@@ -7,45 +7,108 @@ A **multi-cloud control plane** that gives you access to AWS, GCP, and Azure inf
 ## Tech Stack
 
 ![Go](https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)
+![gRPC](https://img.shields.io/badge/gRPC-244c5a?style=for-the-badge&logo=grpc&logoColor=white)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)
 ![Terraform](https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)
 ![AWS](https://img.shields.io/badge/AWS-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white)
 
 ---
 
+## Services
+
+| Service | Purpose | Port | Protocol |
+|---------|---------|------|----------|
+| **Control Plane API** | User-facing REST API | 8081 | REST |
+| **Training Service** | Manages distributed training jobs | 50052 | gRPC |
+| **Inference Service** | Manages LLM deployments | 50053 | gRPC |
+| **Credential Broker** | Issues temporary AWS credentials | 50051 | gRPC |
+| **Orchestrator** | Executes Terraform/kubectl | worker | gRPC client |
+
+---
+
+## Service Communication
+
+| From | To | What's Passed | Purpose |
+|------|-----|---------------|---------|
+| User | Control Plane API | `JWT + JSON` | API request |
+| Control Plane API | Training Service | `gRPC: project_id, framework, workers` | Submit job |
+| Control Plane API | Inference Service | `gRPC: project_id, model, engine` | Create deployment |
+| Orchestrator | Credential Broker | `gRPC: role_arn + JWT` | Get AWS credentials |
+| Credential Broker | AWS STS | `AssumeRoleWithWebIdentity` | Exchange token for creds |
+| Orchestrator | User's AWS | `Terraform + temp creds` | Deploy infrastructure |
+
+---
+
+## Runtime Flow
+
+```
+┌─────────────────┐      ┌───────────────────┐      ┌─────────────────┐
+│   cloudplane    │      │   Credential      │      │    AWS STS      │
+│   Orchestrator  │      │   Broker          │      │                 │
+└────────┬────────┘      └─────────┬─────────┘      └────────┬────────┘
+         │                         │                          │
+         │ 1. "I need AWS creds    │                          │
+         │    for role X" + JWT    │                          │
+         │────────────────────────▶│                          │
+         │                         │                          │
+         │                         │ 2. Validate JWT          │
+         │                         │                          │
+         │                         │ 3. AssumeRoleWithWebIdentity
+         │                         │─────────────────────────▶│
+         │                         │                          │
+         │                         │         4. AWS validates │
+         │                         │            trust policy  │
+         │                         │                          │
+         │                         │◀─────────────────────────│
+         │                         │  5. Temp credentials     │
+         │                         │     (15 min expiry)      │
+         │◀────────────────────────│                          │
+         │  6. Return credentials  │                          │
+         │                         │                          │
+         │ 7. Deploy to user's AWS │                          │
+```
+
+---
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User / Web UI                           │
-└─────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Control Plane API                          │
-│              (Projects, Connections, Routing)                   │
-└─────────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────┐     ┌─────────────────┐    ┌─────────────────┐
-│  Credential │     │    Training     │    │   Inference     │
-│   Broker    │     │    Service      │    │    Service      │
-│  (OIDC→STS) │     │ (Kubeflow Jobs) │    │  (vLLM, TGI)    │
-└─────────────┘     └─────────────────┘    └─────────────────┘
-                               │                    │
-                               ▼                    ▼
-                    ┌─────────────────────────────────────┐
-                    │            Orchestrator             │
-                    │    (Terraform + K8s Operations)     │
-                    └─────────────────────────────────────┘
-                                       │
-                           ┌───────────┴───────────┐
-                           ▼                       ▼
-                   ┌─────────────┐         ┌─────────────┐
-                   │  Your AWS   │         │  Your GCP   │ (future)
-                   │   Account   │         │   Account   │
-                   └─────────────┘         └─────────────┘
+                         REST (HTTPS)
+User ─────────────────────────────────────▶ Control Plane API (:8081)
+                                                   │
+                                          gRPC (internal)
+                              ┌────────────────────┼────────────────────┐
+                              ▼                    ▼                    ▼
+                     Training Service     Inference Service       Job Queue
+                        (:50052)              (:50053)
+                              │                    │
+                              └──────────┬─────────┘
+                                         ▼
+                                   Orchestrator
+                                         │
+                                    gRPC (internal)
+                                         ▼
+                               Credential Broker (:50051)
+                                         │
+                                   AWS SDK/HTTPS
+                                         ▼
+                                     AWS STS
+                                         │
+                                         ▼
+                              User's AWS Account
 ```
+
+---
+
+## What Each Service Stores
+
+| Service | Stores | Never Stores |
+|---------|--------|--------------|
+| Control Plane API | Projects, role_arn mappings | Credentials, tokens |
+| Training Service | Jobs, status, timestamps | Credentials |
+| Inference Service | Deployments, endpoints | Credentials |
+| Credential Broker | Audit logs only | Credentials (never) |
+| Orchestrator | Job state (in-memory) | Credentials (discarded after use) |
 
 ---
 
@@ -76,11 +139,11 @@ A **multi-cloud control plane** that gives you access to AWS, GCP, and Azure inf
 ```
 cloudplane/
 ├── services/
-│   ├── credential-broker/     # OIDC → AWS STS exchange
-│   ├── control-plane-api/     # Projects, Connections, Routing
-│   ├── training-service/      # Distributed training jobs
-│   ├── inference-service/     # LLM inference deployments
-│   └── orchestrator/          # Terraform + K8s operations
+│   ├── credential-broker/     # OIDC → AWS STS (gRPC)
+│   ├── control-plane-api/     # User-facing REST API
+│   ├── training-service/      # Training jobs (gRPC)
+│   ├── inference-service/     # LLM inference (gRPC)
+│   └── orchestrator/          # Terraform + K8s
 ├── docs/
 └── infra/
     └── iam/                   # IAM trust templates
