@@ -4,50 +4,103 @@ Terraform and kubectl execution service for cloudplane.
 
 ## Overview
 
-The orchestrator is a worker-based service that executes infrastructure operations in user-owned cloud accounts. It pulls jobs from a queue, requests temporary credentials from the credential broker via **gRPC**, and executes Terraform/kubectl commands.
+Worker-based service that executes infrastructure operations in user-owned cloud accounts. Pulls jobs from queue, requests credentials from broker, and executes Terraform/kubectl.
 
 ## Architecture
 
 ```
-services/orchestrator/
-├── cmd/worker/main.go           # Worker entry point
-├── internal/
-│   ├── executor/executor.go    # Job execution engine
-│   ├── terraform/terraform.go  # Terraform CLI wrapper
-│   ├── kubernetes/kubernetes.go # kubectl/client-go operations
-│   ├── queue/queue.go          # Job queue (SQS/in-memory)
-│   ├── credclient/client.go    # gRPC client for credential broker
-│   └── state/state.go          # Terraform state management
-├── templates/
-│   ├── eks-cluster/            # EKS Terraform templates
-│   └── training-jobs/          # Kubeflow job templates
-├── go.mod
-└── Dockerfile
+Queue → Orchestrator → Credential Broker → AWS → User's Account
 ```
 
-## Workflow
+## Example Usage
 
-1. Poll queue for deployment jobs
-2. Request credentials from broker (**gRPC call**)
-3. Generate Terraform/K8s configs from templates
-4. Execute operations with streaming logs
-5. Update job status in database
+### Job Execution Pipeline
 
-## Development
+```go
+func (e *Executor) Execute(ctx context.Context, job *Job) error {
+    // 1. Get credentials from broker (gRPC)
+    conn, _ := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+    client := pb.NewCredentialBrokerServiceClient(conn)
 
-```bash
-go mod download
-go run cmd/worker/main.go
+    resp, err := client.IssueAWSCredentials(ctx, &pb.IssueAWSCredentialsRequest{
+        RoleArn: job.RoleARN,
+        Ttl:     900,
+    })
+    if err != nil {
+        return fmt.Errorf("credential error: %w", err)
+    }
+
+    // Set AWS credentials
+    os.Setenv("AWS_ACCESS_KEY_ID", resp.AccessKeyId)
+    os.Setenv("AWS_SECRET_ACCESS_KEY", resp.SecretAccessKey)
+    os.Setenv("AWS_SESSION_TOKEN", resp.SessionToken)
+
+    // 2. Provision EKS if needed
+    if !e.terraform.ClusterExists(ctx, job.ClusterName) {
+        if err := e.terraform.ApplyCluster(ctx, config); err != nil {
+            return err
+        }
+    }
+
+    // 3. Deploy training job
+    manifest := e.renderTemplate(job.Framework, job)
+    return e.k8s.Apply(ctx, manifest)
+}
+```
+
+### Terraform Provisioning
+
+```go
+import "github.com/hashicorp/terraform-exec/tfexec"
+
+func (r *Runner) ApplyCluster(ctx context.Context, config ClusterConfig) error {
+    tf, err := tfexec.NewTerraform(workDir, "/usr/bin/terraform")
+    if err != nil {
+        return err
+    }
+
+    // terraform init
+    if err := tf.Init(ctx, tfexec.Upgrade(true)); err != nil {
+        return fmt.Errorf("init failed: %w", err)
+    }
+
+    // terraform apply
+    if err := tf.Apply(ctx); err != nil {
+        return fmt.Errorf("apply failed: %w", err)
+    }
+
+    return nil
+}
+```
+
+### Kubernetes Deployment
+
+```go
+import "k8s.io/client-go/dynamic"
+
+func (c *Client) CreateTrainingJob(ctx context.Context, manifest []byte) error {
+    obj := &unstructured.Unstructured{}
+    yaml.Unmarshal(manifest, obj)
+
+    gvr := schema.GroupVersionResource{
+        Group:    "kubeflow.org",
+        Version:  "v1",
+        Resource: "pytorchjobs",
+    }
+
+    _, err := c.dynamicClient.Resource(gvr).Namespace("default").Create(ctx, obj, metav1.CreateOptions{})
+    return err
+}
 ```
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CREDENTIAL_BROKER_ADDR` | Credential broker gRPC address | `localhost:50051` |
+| `CREDENTIAL_BROKER_ADDR` | Broker gRPC address | `localhost:50051` |
 | `WORKER_ID` | Worker identifier | `worker-1` |
-| `POLL_INTERVAL` | Job queue poll interval | `5s` |
+| `POLL_INTERVAL` | Queue poll interval | `5s` |
 
 ## Tech Stack
 
-Go 1.21+, gRPC (client), Terraform CLI, client-go, AWS SDK v2
+Go 1.21+, gRPC (client), terraform-exec, client-go, AWS SDK v2

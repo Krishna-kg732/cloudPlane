@@ -22,6 +22,75 @@ Orchestrator → User's AWS Account (temp credentials)
 
 ---
 
+## OIDC Token Validation
+
+### Example: Validating JWT
+
+```go
+import "github.com/coreos/go-oidc/v3/oidc"
+
+func validateToken(ctx context.Context, rawToken string) (*Claims, error) {
+    // Create OIDC provider (fetches public keys)
+    provider, err := oidc.NewProvider(ctx, "https://auth.cloudplane.io")
+    if err != nil {
+        return nil, err
+    }
+
+    // Create verifier
+    verifier := provider.Verifier(&oidc.Config{
+        ClientID: "credential-broker",
+    })
+
+    // Verify token signature and claims
+    idToken, err := verifier.Verify(ctx, rawToken)
+    if err != nil {
+        return nil, err  // Invalid token
+    }
+
+    // Extract claims
+    var claims Claims
+    idToken.Claims(&claims)
+    return &claims, nil
+}
+```
+
+---
+
+## AWS STS Integration
+
+### Example: AssumeRoleWithWebIdentity
+
+```go
+import (
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/sts"
+)
+
+func assumeRole(ctx context.Context, roleARN, oidcToken string) (*Credentials, error) {
+    cfg, _ := config.LoadDefaultConfig(ctx)
+    stsClient := sts.NewFromConfig(cfg)
+
+    result, err := stsClient.AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
+        RoleArn:          aws.String(roleARN),
+        WebIdentityToken: aws.String(oidcToken),
+        RoleSessionName:  aws.String("cloudplane-session"),
+        DurationSeconds:  aws.Int32(900),  // 15 minutes
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return &Credentials{
+        AccessKeyID:     *result.Credentials.AccessKeyId,
+        SecretAccessKey: *result.Credentials.SecretAccessKey,
+        SessionToken:    *result.Credentials.SessionToken,
+        ExpiresAt:       *result.Credentials.Expiration,
+    }, nil
+}
+```
+
+---
+
 ## Communication Security
 
 | Communication | Protocol | Security |
@@ -52,17 +121,18 @@ Orchestrator → User's AWS Account (temp credentials)
 
 ### 3. Short-Lived Credentials
 
-- Max TTL: 900 seconds (15 minutes)
-- Credentials are vended on-demand, used immediately, then discarded
-- Never written to disk or database
+```go
+const MaxTTL = 900  // 15 minutes
 
-### 4. Least Privilege
+func issueCredentials(ttl int32) int32 {
+    if ttl > MaxTTL || ttl <= 0 {
+        return MaxTTL
+    }
+    return ttl
+}
+```
 
-- Users define minimal IAM permissions in their accounts
-- No `AdministratorAccess` required
-- cloudplane requests only what's needed for the operation
-
-### 5. Service Isolation
+### 4. Service Isolation
 
 | Service | Internet-facing | Credential access | Protocol |
 |---------|-----------------|-------------------|----------|
@@ -73,13 +143,27 @@ Orchestrator → User's AWS Account (temp credentials)
 
 ---
 
-## Audit Trail
+## IAM Trust Policy
 
-All operations are logged:
+Users set this up in their AWS account:
 
-1. **cloudplane logs**: Every credential request, job execution, API call
-2. **AWS CloudTrail**: All AWS API calls with cloudplane's session name
-3. **User visibility**: Users see all operations in their CloudTrail
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::CLOUDPLANE_ACCOUNT:oidc-provider/auth.cloudplane.io"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "auth.cloudplane.io:aud": "credential-broker"
+      }
+    }
+  }]
+}
+```
 
 ---
 
@@ -98,8 +182,16 @@ All operations are logged:
 
 ## Immediate Revocation
 
-To revoke cloudplane access:
+```go
+// To revoke cloudplane access:
+// 1. Delete IAM trust policy in user's account
+// 2. All subsequent AssumeRoleWithWebIdentity calls fail immediately
+// 3. Existing credentials expire within 15 minutes max
 
-1. Delete IAM trust policy in user's account
-2. All subsequent `AssumeRoleWithWebIdentity` calls fail immediately
-3. Existing credentials expire within 15 minutes max
+// Example: Checking if access is revoked
+_, err := stsClient.AssumeRoleWithWebIdentity(ctx, input)
+if err != nil {
+    // Access denied - trust policy removed
+    return ErrAccessRevoked
+}
+```

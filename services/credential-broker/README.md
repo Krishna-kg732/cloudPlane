@@ -4,23 +4,11 @@ A secure gRPC service that issues short-lived cloud credentials. Only accessible
 
 ## Overview
 
-Issues temporary AWS credentials using STS AssumeRoleWithWebIdentity with a maximum TTL of 15 minutes. Returns credentials directly from AWS with no persistent state.
-
-**What it does:**
-- Issues temporary AWS credentials via gRPC
-- Enforces 15-minute maximum TTL
-- Returns credentials from cloud provider
-
-**What it does NOT do:**
-- Authenticate end users
-- Evaluate policies
-- Store credentials
-
-**Access:** Orchestrator service only via service-to-service JWT with `aud=credential-broker` and `scope=issue:credentials`.
+Issues temporary AWS credentials using STS AssumeRoleWithWebIdentity with a maximum TTL of 15 minutes.
 
 ## gRPC API
 
-**Proto file**: `proto/credential_broker.proto`
+**Port**: 50051
 
 ```protobuf
 service CredentialBrokerService {
@@ -29,57 +17,75 @@ service CredentialBrokerService {
 }
 ```
 
-**Port**: 50051 (default)
+## Example Usage
 
-## Architecture
+### Client (Orchestrator)
 
+```go
+conn, _ := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+client := pb.NewCredentialBrokerServiceClient(conn)
+
+resp, err := client.IssueAWSCredentials(ctx, &pb.IssueAWSCredentialsRequest{
+    RoleArn: "arn:aws:iam::123456789012:role/DeployRole",
+    Ttl:     900,
+})
+
+// Use temporary credentials
+os.Setenv("AWS_ACCESS_KEY_ID", resp.AccessKeyId)
+os.Setenv("AWS_SECRET_ACCESS_KEY", resp.SecretAccessKey)
+os.Setenv("AWS_SESSION_TOKEN", resp.SessionToken)
 ```
-credential-broker/
-├── cmd/server/main.go              # gRPC server bootstrap
-├── proto/
-│   └── credential_broker.proto     # Service definition
-├── internal/
-│   ├── server/server.go            # gRPC handlers
-│   ├── service/credentials.go      # Business logic
-│   ├── aws/aws.go                  # AWS STS adapter
-│   ├── authz/authz.go              # Authorization
-│   └── oidc/oidc.go                # JWT validation
-├── go.mod
-└── Dockerfile
+
+### Server Implementation
+
+```go
+func (s *Server) IssueAWSCredentials(ctx context.Context, req *pb.IssueAWSCredentialsRequest) (*pb.IssueAWSCredentialsResponse, error) {
+    // 1. Extract JWT from metadata
+    md, _ := metadata.FromIncomingContext(ctx)
+    token := strings.TrimPrefix(md.Get("authorization")[0], "Bearer ")
+
+    // 2. Validate OIDC token
+    claims, err := s.oidcValidator.Validate(ctx, token)
+    if err != nil {
+        return nil, status.Error(codes.Unauthenticated, "invalid token")
+    }
+
+    // 3. Call AWS STS
+    result, err := s.stsClient.AssumeRoleWithWebIdentity(ctx, &sts.AssumeRoleWithWebIdentityInput{
+        RoleArn:          aws.String(req.RoleArn),
+        WebIdentityToken: aws.String(token),
+        DurationSeconds:  aws.Int32(req.Ttl),
+    })
+    if err != nil {
+        return nil, status.Error(codes.Internal, "STS error")
+    }
+
+    return &pb.IssueAWSCredentialsResponse{
+        AccessKeyId:     *result.Credentials.AccessKeyId,
+        SecretAccessKey: *result.Credentials.SecretAccessKey,
+        SessionToken:    *result.Credentials.SessionToken,
+        ExpiresAt:       result.Credentials.Expiration.Format(time.RFC3339),
+    }, nil
+}
 ```
 
 ## Development
 
-**Prerequisites:** Go 1.21+, protoc, protoc-gen-go, protoc-gen-go-grpc
-
-**Generate Proto**
 ```bash
+# Generate proto
 protoc --go_out=. --go-grpc_out=. proto/credential_broker.proto
-```
 
-**Running Locally**
-```bash
-go mod download
+# Run
 go run cmd/server/main.go
 ```
 
-**Environment Variables**
+## Environment Variables
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GRPC_PORT` | gRPC server port | `50051` |
 | `OIDC_ISSUER` | OIDC provider URL | (required) |
-| `OIDC_AUDIENCE` | Expected JWT audience | `credential-broker` |
-| `MAX_TTL` | Maximum credential TTL (seconds) | `900` |
-| `AWS_REGION` | AWS region | `us-east-1` |
-
-## Security
-
-**Authentication:** All RPCs require valid JWT with `aud=credential-broker` and `scope=issue:credentials`
-
-**Credential Handling:**
-- Never logged or persisted
-- Returned directly from AWS STS
-- Maximum 15-minute TTL enforced
+| `MAX_TTL` | Max credential TTL | `900` |
 
 ## Tech Stack
 

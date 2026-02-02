@@ -4,11 +4,11 @@ A gRPC service for managing distributed training jobs on Kubernetes.
 
 ## Overview
 
-The training-service handles distributed training job lifecycle: submission, monitoring, and cancellation. It works with the orchestrator to deploy Kubeflow training operators (PyTorchJob, TFJob, XGBoostJob, MPIJob).
+Handles distributed training job lifecycle: submission, monitoring, and cancellation. Works with Kubeflow training operators (PyTorchJob, TFJob, XGBoostJob, MPIJob).
 
 ## gRPC API
 
-**Proto file**: `proto/training_service.proto`
+**Port**: 50052
 
 ```protobuf
 service TrainingService {
@@ -16,55 +16,79 @@ service TrainingService {
   rpc GetJob(GetJobRequest) returns (GetJobResponse);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
-  rpc Health(HealthRequest) returns (HealthResponse);
 }
 ```
 
-**Port**: 50052 (default)
+## Example Usage
 
-## Architecture
+### Client (Control Plane API)
 
+```go
+conn, _ := grpc.NewClient("localhost:50052", grpc.WithTransportCredentials(insecure.NewCredentials()))
+client := pb.NewTrainingServiceClient(conn)
+
+// Submit job
+resp, err := client.SubmitJob(ctx, &pb.SubmitJobRequest{
+    ProjectId:     "proj-123",
+    Framework:     "pytorch",
+    Image:         "user/training:v1",
+    Workers:       4,
+    GpusPerWorker: 8,
+    Command:       []string{"python", "train.py"},
+    DataPath:      "s3://bucket/data",
+})
+fmt.Printf("Job ID: %s\n", resp.JobId)
+
+// Get status
+status, _ := client.GetJob(ctx, &pb.GetJobRequest{JobId: resp.JobId})
+fmt.Printf("Status: %s\n", status.Status)
 ```
-training-service/
-├── cmd/api/main.go              # gRPC server bootstrap
-├── proto/
-│   └── training_service.proto   # Service definition
-├── internal/
-│   ├── server/server.go         # gRPC handlers
-│   └── jobs/jobs.go             # Job models and repository
-├── templates/                   # Kubeflow job templates
-│   ├── pytorchjob.yaml.tmpl
-│   ├── tfjob.yaml.tmpl
-│   ├── xgboostjob.yaml.tmpl
-│   └── mpijob.yaml.tmpl
-├── go.mod
-└── Dockerfile
+
+### Server Implementation
+
+```go
+func (s *Server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.SubmitJobResponse, error) {
+    job := &Job{
+        ID:        uuid.New().String(),
+        ProjectID: req.ProjectId,
+        Framework: req.Framework,
+        Image:     req.Image,
+        Workers:   int(req.Workers),
+        Status:    StatusPending,
+    }
+
+    // Save to database
+    if err := s.repo.Create(ctx, job); err != nil {
+        return nil, status.Error(codes.Internal, "failed to create job")
+    }
+
+    // Enqueue for orchestrator
+    if err := s.queue.Enqueue(ctx, job); err != nil {
+        return nil, status.Error(codes.Internal, "failed to queue job")
+    }
+
+    return &pb.SubmitJobResponse{
+        JobId:  job.ID,
+        Status: string(job.Status),
+    }, nil
+}
 ```
 
 ## Supported Frameworks
 
 | Framework | Kubeflow Operator | Use Case |
 |-----------|-------------------|----------|
-| PyTorch | PyTorchJob | DDP training, DeepSpeed |
-| TensorFlow | TFJob | TF distributed strategy |
-| XGBoost | XGBoostJob | Distributed gradient boosting |
-| MPI | MPIJob | Horovod, custom MPI workloads |
+| PyTorch | PyTorchJob | DDP, DeepSpeed |
+| TensorFlow | TFJob | TF distributed |
+| XGBoost | XGBoostJob | Gradient boosting |
+| MPI | MPIJob | Horovod |
 
 ## Development
 
 ```bash
-# Generate proto
 protoc --go_out=. --go-grpc_out=. proto/training_service.proto
-
-# Run
 go run cmd/api/main.go
 ```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GRPC_PORT` | gRPC server port | `50052` |
 
 ## Tech Stack
 

@@ -4,65 +4,92 @@ A gRPC service for managing LLM inference deployments on Kubernetes.
 
 ## Overview
 
-The inference-service handles LLM inference deployment lifecycle: creation, scaling, monitoring, and deletion. It supports multiple inference engines including vLLM, TGI, and Triton.
+Handles LLM inference deployment lifecycle: creation, scaling, monitoring, and deletion. Supports vLLM, TGI, and Triton inference engines.
 
 ## gRPC API
 
-**Proto file**: `proto/inference_service.proto`
+**Port**: 50053
 
 ```protobuf
 service InferenceService {
   rpc CreateDeployment(CreateDeploymentRequest) returns (CreateDeploymentResponse);
   rpc GetDeployment(GetDeploymentRequest) returns (GetDeploymentResponse);
-  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
-  rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
   rpc ScaleDeployment(ScaleDeploymentRequest) returns (ScaleDeploymentResponse);
-  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
 }
 ```
 
-**Port**: 50053 (default)
+## Example Usage
 
-## Architecture
+### Client (Control Plane API)
 
+```go
+conn, _ := grpc.NewClient("localhost:50053", grpc.WithTransportCredentials(insecure.NewCredentials()))
+client := pb.NewInferenceServiceClient(conn)
+
+// Create deployment
+resp, err := client.CreateDeployment(ctx, &pb.CreateDeploymentRequest{
+    ProjectId:      "proj-123",
+    Name:           "llama-70b",
+    Model:          "meta-llama/Llama-2-70b",
+    Engine:         "vllm",
+    Replicas:       2,
+    GpusPerReplica: 8,
+})
+fmt.Printf("Deployment ID: %s\n", resp.DeploymentId)
+
+// Scale deployment
+_, err = client.ScaleDeployment(ctx, &pb.ScaleDeploymentRequest{
+    DeploymentId: resp.DeploymentId,
+    Replicas:     4,
+})
 ```
-inference-service/
-├── cmd/api/main.go              # gRPC server bootstrap
-├── proto/
-│   └── inference_service.proto  # Service definition
-├── internal/
-│   ├── server/server.go         # gRPC handlers
-│   └── serving/serving.go       # Deployment models
-├── templates/                   # Inference engine templates
-│   ├── vllm-deployment.yaml.tmpl
-│   └── tgi-deployment.yaml.tmpl
-├── go.mod
-└── Dockerfile
+
+### Server Implementation
+
+```go
+func (s *Server) CreateDeployment(ctx context.Context, req *pb.CreateDeploymentRequest) (*pb.CreateDeploymentResponse, error) {
+    deployment := &Deployment{
+        ID:        uuid.New().String(),
+        ProjectID: req.ProjectId,
+        Name:      req.Name,
+        Model:     req.Model,
+        Engine:    Engine(req.Engine),
+        Replicas:  int(req.Replicas),
+        Status:    StatusPending,
+    }
+
+    // Save to database
+    if err := s.repo.Create(ctx, deployment); err != nil {
+        return nil, status.Error(codes.Internal, "failed to create deployment")
+    }
+
+    // Enqueue for orchestrator
+    if err := s.queue.Enqueue(ctx, deployment); err != nil {
+        return nil, status.Error(codes.Internal, "failed to queue deployment")
+    }
+
+    return &pb.CreateDeploymentResponse{
+        DeploymentId: deployment.ID,
+        Status:       string(deployment.Status),
+    }, nil
+}
 ```
 
 ## Supported Engines
 
-| Engine | Description | Use Case |
-|--------|-------------|----------|
-| vLLM | High-throughput LLM serving | Large-scale inference |
-| TGI | HuggingFace Text Generation Inference | HuggingFace models |
-| Triton | NVIDIA Triton Inference Server | Multi-model, multi-framework |
+| Engine | Description |
+|--------|-------------|
+| vLLM | High-throughput LLM serving |
+| TGI | HuggingFace Text Generation Inference |
+| Triton | NVIDIA multi-model inference server |
 
 ## Development
 
 ```bash
-# Generate proto
 protoc --go_out=. --go-grpc_out=. proto/inference_service.proto
-
-# Run
 go run cmd/api/main.go
 ```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GRPC_PORT` | gRPC server port | `50053` |
 
 ## Tech Stack
 
