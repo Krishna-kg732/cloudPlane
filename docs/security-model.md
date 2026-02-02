@@ -1,174 +1,105 @@
 # Security Model
 
-OIDC-based delegated trust for zero-credential access to user AWS accounts.
-
----
+This document describes the security model for cloudplane.
 
 ## Overview
 
-cloudplane **never stores AWS credentials**. Instead:
-
-1. User creates IAM role with OIDC trust policy
-2. cloudplane exchanges OIDC token for short-lived STS credentials
-3. Credentials expire in 15 minutes
-4. User can revoke access instantly by deleting trust policy
+cloudplane operates on a **delegated trust** model using OIDC and short-lived credentials. The platform never stores cloud access keys or secrets.
 
 ---
 
-## OIDC Trust Flow
+## Authentication Flow
 
 ```
-┌─────────────┐     ┌───────────────┐     ┌─────────────┐
-│ cloudplane  │     │   AWS STS     │     │ User's IAM  │
-│ Credential  │────▶│               │────▶│   Role      │
-│ Broker      │     │ AssumeRole    │     │             │
-└─────────────┘     │ WithWebIdentity     └─────────────┘
-       │            └───────────────┘
-       │                    │
-       ▼                    ▼
-   OIDC Token         Temp Credentials
-   (from IdP)           (15 min TTL)
+User → Control Plane API (JWT over REST)
+          ↓
+Orchestrator → Credential Broker (gRPC + service JWT)
+          ↓
+Credential Broker → AWS STS (AssumeRoleWithWebIdentity)
+          ↓
+Orchestrator → User's AWS Account (temp credentials)
 ```
 
 ---
 
-## IAM Role Setup
+## Communication Security
 
-Users deploy this CloudFormation:
-
-```yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Description: cloudplane OIDC trust
-
-Parameters:
-  OIDCProviderArn:
-    Type: String
-    Default: arn:aws:iam::CLOUDPLANE_ACCOUNT:oidc-provider/auth.cloudplane.io
-
-Resources:
-  CloudplaneRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: CloudplaneRole
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref OIDCProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                auth.cloudplane.io:aud: credential-broker
-                auth.cloudplane.io:sub: !Sub "project:${AWS::AccountId}"
-      ManagedPolicyArns:
-        - !Ref CloudplanePolicy
-
-  CloudplanePolicy:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          # EKS
-          - Effect: Allow
-            Action:
-              - eks:*
-            Resource: "*"
-          # EC2 (for node groups)
-          - Effect: Allow
-            Action:
-              - ec2:*
-            Resource: "*"
-          # FSx
-          - Effect: Allow
-            Action:
-              - fsx:*
-            Resource: "*"
-          # S3 (state + data)
-          - Effect: Allow
-            Action:
-              - s3:*
-            Resource:
-              - arn:aws:s3:::cloudplane-*
-              - arn:aws:s3:::cloudplane-*/*
-          # IAM (for service accounts)
-          - Effect: Allow
-            Action:
-              - iam:CreateRole
-              - iam:AttachRolePolicy
-              - iam:CreateOpenIDConnectProvider
-            Resource: "*"
-
-Outputs:
-  RoleArn:
-    Value: !GetAtt CloudplaneRole.Arn
-```
+| Communication | Protocol | Security |
+|---------------|----------|----------|
+| User → API | REST/HTTPS | JWT in Authorization header |
+| Orchestrator → Credential Broker | gRPC/TLS | Mutual TLS + service JWT |
+| Internal services | gRPC/TLS | mTLS between pods |
 
 ---
 
-## Credential Lifecycle
+## Key Principles
 
-| Step | Duration | What Happens |
-|------|----------|--------------|
-| 1 | 0s | Orchestrator requests credentials |
-| 2 | ~100ms | Broker calls STS AssumeRoleWithWebIdentity |
-| 3 | ~100ms | STS returns temp credentials |
-| 4 | 15 min | Credentials valid, Terraform/kubectl execute |
-| 5 | 15 min+ | Credentials expire, discarded |
+### 1. Delegated Trust via OIDC
 
-**Never stored**: Credentials exist only in memory during execution.
+- Users configure IAM trust policies in their AWS accounts
+- cloudplane exchanges OIDC tokens for temporary STS credentials
+- Credentials expire in 15-60 minutes
+- Revoke access instantly by deleting the trust policy
 
----
+### 2. No Credential Storage
 
-## Revocation
+| What we store | What we NEVER store |
+|---------------|---------------------|
+| `project_id` | Access keys |
+| `role_arn` | Secret keys |
+| Audit logs | Session tokens |
+| | OIDC tokens |
 
-User can revoke access instantly:
+### 3. Short-Lived Credentials
 
-```bash
-# Delete the trust policy
-aws iam delete-role-policy --role-name CloudplaneRole --policy-name trust
+- Max TTL: 900 seconds (15 minutes)
+- Credentials are vended on-demand, used immediately, then discarded
+- Never written to disk or database
 
-# Or delete the entire role
-aws cloudformation delete-stack --stack-name cloudplane-trust
-```
+### 4. Least Privilege
 
-**Effect**: Next credential request fails immediately.
+- Users define minimal IAM permissions in their accounts
+- No `AdministratorAccess` required
+- cloudplane requests only what's needed for the operation
+
+### 5. Service Isolation
+
+| Service | Internet-facing | Credential access | Protocol |
+|---------|-----------------|-------------------|----------|
+| Control Plane API | Yes | None | REST |
+| Credential Broker | No (internal) | STS only | gRPC |
+| Orchestrator | No (internal) | Via broker | gRPC client |
+| Observability | No (internal) | Read-only | REST |
 
 ---
 
 ## Audit Trail
 
-All operations logged in user's CloudTrail:
+All operations are logged:
 
-```json
-{
-  "eventName": "AssumeRoleWithWebIdentity",
-  "userIdentity": {
-    "type": "WebIdentityUser",
-    "principalId": "arn:aws:iam::USER_ACCOUNT:role/CloudplaneRole",
-    "webIdFederationData": {
-      "federatedProvider": "arn:aws:iam::CLOUDPLANE:oidc-provider/auth.cloudplane.io"
-    }
-  }
-}
-```
-
-Plus cloudplane logs every credential request:
-- Timestamp
-- Project ID
-- Role ARN (no credentials logged)
-- Success/failure
+1. **cloudplane logs**: Every credential request, job execution, API call
+2. **AWS CloudTrail**: All AWS API calls with cloudplane's session name
+3. **User visibility**: Users see all operations in their CloudTrail
 
 ---
 
-## Security Guarantees
+## Threat Mitigation
 
-| Guarantee | How |
-|-----------|-----|
-| No credential storage | Vended on-demand, discarded after use |
-| Short-lived | 15-min max TTL |
-| User-controlled | IAM permissions defined by user |
-| Instant revocation | Delete trust policy |
-| Full audit | CloudTrail + cloudplane logs |
-| Least privilege | User scopes permissions to what's needed |
+| Threat | Mitigation |
+|--------|------------|
+| Stolen credentials | Short-lived (15 min), revocable |
+| Credential leakage | Never stored, never logged |
+| Privilege escalation | User-defined IAM policies |
+| Insider threat | Audit logs, no persistent access |
+| Service compromise | Blast radius limited to single service |
+| Man-in-the-middle | TLS/mTLS for all communication |
+
+---
+
+## Immediate Revocation
+
+To revoke cloudplane access:
+
+1. Delete IAM trust policy in user's account
+2. All subsequent `AssumeRoleWithWebIdentity` calls fail immediately
+3. Existing credentials expire within 15 minutes max

@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package inferenceservice.v1;
+
+option go_package = "cloudplane/inference-service/proto/inferenceservice/v1;inferenceservicev1";
+
+// InferenceService manages LLM inference deployments
+service InferenceService {
+  // CreateDeployment creates a new inference deployment
+  rpc CreateDeployment(CreateDeploymentRequest) returns (CreateDeploymentResponse);
+  
+  // GetDeployment returns the status of a deployment
+  rpc GetDeployment(GetDeploymentRequest) returns (GetDeploymentResponse);
+  
+  // ListDeployments returns all deployments for a project
+  rpc ListDeployments(ListDeploymentsRequest) returns (ListDeploymentsResponse);
+  
+  // DeleteDeployment removes a deployment
+  rpc DeleteDeployment(DeleteDeploymentRequest) returns (DeleteDeploymentResponse);
+  
+  // ScaleDeployment adjusts replicas
+  rpc ScaleDeployment(ScaleDeploymentRequest) returns (ScaleDeploymentResponse);
+  
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message CreateDeploymentRequest {
+  string project_id = 1;
+  string name = 2;
+  string model = 3;           // e.g., meta-llama/Llama-2-70b
+  string engine = 4;          // vllm, tgi, triton
+  int32 replicas = 5;
+  int32 gpus_per_replica = 6;
+  map<string, string> engine_args = 7;
+}
+
+message CreateDeploymentResponse {
+  string deployment_id = 1;
+  string status = 2;
+}
+
+message GetDeploymentRequest {
+  string deployment_id = 1;
+}
+
+message GetDeploymentResponse {
+  string deployment_id = 1;
+  string project_id = 2;
+  string name = 3;
+  string model = 4;
+  string engine = 5;
+  string status = 6;  // pending, running, failed, stopped
+  int32 replicas = 7;
+  string endpoint = 8;
+  string created_at = 9;
+}
+
+message ListDeploymentsRequest {
+  string project_id = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListDeploymentsResponse {
+  repeated GetDeploymentResponse deployments = 1;
+  int32 total = 2;
+}
+
+message DeleteDeploymentRequest {
+  string deployment_id = 1;
+}
+
+message DeleteDeploymentResponse {
+  bool success = 1;
+}
+
+message ScaleDeploymentRequest {
+  string deployment_id = 1;
+  int32 replicas = 2;
+}
+
+message ScaleDeploymentResponse {
+  bool success = 1;
+  int32 replicas = 2;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string service = 2;
+}

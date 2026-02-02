@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package trainingservice.v1;
+
+option go_package = "cloudplane/training-service/proto/trainingservice/v1;trainingservicev1";
+
+// TrainingService manages distributed training jobs
+service TrainingService {
+  // SubmitJob creates a new training job
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  
+  // GetJob returns the status of a training job
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  
+  // ListJobs returns all jobs for a project
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  
+  // CancelJob cancels a running job
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message SubmitJobRequest {
+  string project_id = 1;
+  string framework = 2;  // pytorch, tensorflow, xgboost, mpi
+  string image = 3;
+  int32 workers = 4;
+  int32 gpus_per_worker = 5;
+  repeated string command = 6;
+  map<string, string> env_vars = 7;
+  string data_path = 8;  // S3 path
+}
+
+message SubmitJobResponse {
+  string job_id = 1;
+  string status = 2;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  string job_id = 1;
+  string project_id = 2;
+  string framework = 3;
+  string status = 4;  // pending, running, completed, failed
+  string created_at = 5;
+  string started_at = 6;
+  string completed_at = 7;
+}
+
+message ListJobsRequest {
+  string project_id = 1;
+  string status = 2;  // optional filter
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListJobsResponse {
+  repeated GetJobResponse jobs = 1;
+  int32 total = 2;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobResponse {
+  bool success = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+  string service = 2;
+}
