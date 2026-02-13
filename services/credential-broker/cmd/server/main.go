@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
+	"golang.org/x/oauth2"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 	// TODO: Uncomment after generating proto files
 	// pb "cloudplane/credential-broker/proto/credentialbroker/v1"
 	// "cloudplane/credential-broker/internal/server"
@@ -47,6 +47,20 @@ func main() {
 	// Validate required config
 	if cfg.OIDCIssuer == "" {
 		log.Println("WARNING: OIDC_ISSUER not set, JWT validation disabled")
+	}
+
+	var verifier *oauth2.TokenSource
+	if cfg.OIDCIssuer != "" {
+		ctx := context.Background()
+
+		provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuer)
+		if err != nil {
+			log.Fatalf("Failed to initialize OIDC provider: %v", err)
+		}
+
+		verifier = provider.Verifier(&oidc.Config{
+			ClientID: cfg.OIDCAudience,
+		})
 	}
 
 	// Create gRPC server
