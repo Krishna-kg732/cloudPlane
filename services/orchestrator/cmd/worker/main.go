@@ -8,22 +8,29 @@ import (
 	"syscall"
 	"time"
 
+	"cloudplane/orchestrator/internal/credclient"
 	"cloudplane/orchestrator/internal/executor"
 	"cloudplane/orchestrator/internal/queue"
 )
 
 // Config holds worker configuration
 type Config struct {
-	CredentialBrokerURL string
-	PollInterval        time.Duration
-	WorkerID            string
+	CredentialBrokerAddr string
+	PollInterval         time.Duration
+	WorkerID             string
 }
 
 func loadConfig() *Config {
+	pollInterval, err := time.ParseDuration(getEnv("POLL_INTERVAL", "5s"))
+	if err != nil {
+		log.Printf("WARNING: Invalid POLL_INTERVAL value, using default 5s")
+		pollInterval = 5 * time.Second
+	}
+
 	return &Config{
-		CredentialBrokerURL: getEnv("CREDENTIAL_BROKER_URL", "http://localhost:8080"),
-		PollInterval:        5 * time.Second,
-		WorkerID:            getEnv("WORKER_ID", "worker-1"),
+		CredentialBrokerAddr: getEnv("CREDENTIAL_BROKER_ADDR", "localhost:50051"),
+		PollInterval:         pollInterval,
+		WorkerID:             getEnv("WORKER_ID", "worker-1"),
 	}
 }
 
@@ -39,11 +46,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize gRPC client for credential broker
+	credClient, err := credclient.NewClient(cfg.CredentialBrokerAddr)
+	if err != nil {
+		log.Fatalf("Failed to connect to credential broker: %v", err)
+	}
+	defer credClient.Close()
+
 	// Initialize job queue (in-memory for MVP)
 	jobQueue := queue.NewInMemoryQueue()
 
-	// Initialize executor
-	exec := executor.NewExecutor(cfg.CredentialBrokerURL, cfg.WorkerID)
+	// Initialize executor with gRPC credential client
+	exec := executor.NewExecutor(credClient, cfg.WorkerID)
 
 	// Start worker loop
 	go func() {

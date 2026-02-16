@@ -5,20 +5,21 @@ import (
 	"fmt"
 	"log"
 
+	"cloudplane/orchestrator/internal/credclient"
 	"cloudplane/orchestrator/internal/queue"
 )
 
 // Executor orchestrates job execution
 type Executor struct {
-	credentialBrokerURL string
-	workerID            string
+	credClient *credclient.Client
+	workerID   string
 }
 
 // NewExecutor creates a new job executor
-func NewExecutor(credentialBrokerURL, workerID string) *Executor {
+func NewExecutor(credClient *credclient.Client, workerID string) *Executor {
 	return &Executor{
-		credentialBrokerURL: credentialBrokerURL,
-		workerID:            workerID,
+		credClient: credClient,
+		workerID:   workerID,
 	}
 }
 
@@ -28,10 +29,9 @@ func (e *Executor) Execute(ctx context.Context, job *queue.Job) error {
 
 	// TODO: Implement job execution pipeline
 	//
-	// Step 1: Get credentials from broker
-	// - POST to e.credentialBrokerURL/v1/credentials/aws
-	// - Body: { "role_arn": job.RoleARN, "ttl": 900 }
-	// - Extract access_key_id, secret_access_key, session_token
+	// Step 1: Get credentials from broker via gRPC
+	// - Call e.credClient.IssueAWSCredentials(ctx, job.RoleARN, 900)
+	// - Extract AccessKeyID, SecretAccessKey, SessionToken from response
 	//
 	// Step 2: Check if EKS cluster exists
 	// - Check Terraform state for cluster "cloudplane-{job.ProjectID}"
