@@ -1,0 +1,77 @@
+# ===============================
+# Go build artifacts
+# ===============================
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# Build output directories
+/bin/
+/dist/
+/build/
+
+# Go workspace file (optional)
+go.work
+go.work.sum
+
+# ===============================
+# Coverage reports
+# ===============================
+
+coverage.out
+coverage.html
+
+# ===============================
+# Dependency directories
+# ===============================
+
+vendor/
+
+# ===============================
+# Environment files
+# ===============================
+
+.env
+.env.*
+*.local
+
+# ===============================
+# IDE / Editor files
+# ===============================
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# Sublime
+*.sublime-workspace
+
+# ===============================
+# OS files
+# ===============================
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===============================
+# Logs
+# ===============================
+
+*.log
+
+# ===============================
+# Temporary files
+# ===============================
+
+*.swp
+*.tmp
+*.bak

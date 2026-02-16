@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
-	"golang.org/x/oauth2"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 	// TODO: Uncomment after generating proto files
 	// pb "cloudplane/credential-broker/proto/credentialbroker/v1"
 	// "cloudplane/credential-broker/internal/server"
@@ -25,11 +27,17 @@ type Config struct {
 }
 
 func loadConfig() *Config {
+	maxTTL, err := strconv.Atoi(getEnv("MAX_TTL", "900"))
+	if err != nil {
+		log.Printf("WARNING: Invalid MAX_TTL value, using default 900")
+		maxTTL = 900
+	}
+
 	return &Config{
 		Port:         getEnv("GRPC_PORT", "50051"),
 		OIDCIssuer:   getEnv("OIDC_ISSUER", ""),
 		OIDCAudience: getEnv("OIDC_AUDIENCE", "credential-broker"),
-		MaxTTL:       900, // 15 minutes
+		MaxTTL:       maxTTL,
 		AWSRegion:    getEnv("AWS_REGION", "us-east-1"),
 	}
 }
@@ -49,7 +57,7 @@ func main() {
 		log.Println("WARNING: OIDC_ISSUER not set, JWT validation disabled")
 	}
 
-	var verifier *oauth2.TokenSource
+	var verifier *oidc.IDTokenVerifier
 	if cfg.OIDCIssuer != "" {
 		ctx := context.Background()
 
@@ -62,6 +70,9 @@ func main() {
 			ClientID: cfg.OIDCAudience,
 		})
 	}
+
+	// TODO: Pass verifier to auth interceptor once implemented
+	_ = verifier
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer(

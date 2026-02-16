@@ -1,8 +1,5 @@
 package aws
 
-<<<<<<< Updated upstream
-// STS AssumeRoleWithWebIdentity implementation
-=======
 import (
 	"context"
 	"fmt"
@@ -60,4 +57,3 @@ func (c *STSClient) AssumeRoleWithWebIdentity(ctx context.Context, roleARN, webI
 
 	return nil, fmt.Errorf("not implemented")
 }
->>>>>>> Stashed changes

@@ -1,8 +1,5 @@
 package oidc
 
-<<<<<<< Updated upstream
-// OIDC token validation
-=======
 import (
 	"context"
 	"fmt"
@@ -59,4 +56,3 @@ func (v *Validator) ValidateToken(ctx context.Context, rawToken string) (*Claims
 
 	return nil, fmt.Errorf("not implemented")
 }
->>>>>>> Stashed changes

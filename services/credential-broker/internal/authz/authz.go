@@ -1,8 +1,5 @@
 package authz
 
-<<<<<<< Updated upstream
-// Authorization checks
-=======
 import (
 	"fmt"
 
@@ -52,4 +49,3 @@ func (a *Authorizer) AuthorizeForRole(claims *oidc.Claims, roleARN string) error
 	_ = roleARN
 	return a.Authorize(claims)
 }
->>>>>>> Stashed changes
