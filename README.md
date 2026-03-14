@@ -1,5 +1,5 @@
 # cloudplane
-
+(currently being scaffolded)
 A **multi-cloud control plane** that gives you access to AWS, GCP, and Azure infrastructure from a single interface — while keeping everything in your own accounts.
 
 > **MVP**: Currently AWS-only. GCP and Azure coming in future phases.
